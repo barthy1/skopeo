@@ -1,27 +1,91 @@
 language: go
 
-matrix:
-  include:
-  -  os: linux
-     sudo: required
-     services:
-       - docker
-  -  os: osx
-
 go:
   - 1.13.x
 
 notifications:
   email: false
 
-install:
-  # Ideally, the (brew update) should not be necessary and Travis would have fairly
-  # frequenstly updated OS images; that’s not been the case historically.
-  # In particular, explicitly unlink python@2, which has been removed from Homebrew
-  # since the last OS image build (as of July 2020), but the Travis OS still
-  # contains it, and it prevents updating of Python 3.
-  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then brew update && brew unlink python@2 && brew install gpgme ; fi
+env:
+  global:
+    - REGISTRY=quay.io
 
-script:
-  - if [[ "$TRAVIS_OS_NAME" == "osx" ]];   then hack/travis_osx.sh ; fi
-  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then make vendor && ./hack/tree_status.sh && make local-cross && make check ; fi
+# Just declaration of the image-build-push step with script actions to execute
+x_base_steps:
+  - &image-build-push
+    services:
+      - docker
+    os: linux
+    script:
+      # skopeo upstream image build and push
+      - export SOURCE_TYPE=upstream; export REPO=skopeo/upstream; export TAG=master
+      - make build-arch-container
+      # Dont's push if it's PR check
+      - if [[ "$TRAVIS_EVENT_TYPE" != "pull_request" ]]; make push-arch-container ; fi
+      # skopeo stable image build and push
+      - export SOURCE_TYPE=stable ; export REPO=skopeo/stable ; export TAG=v1.2.0 ; export EXTRA_REPO=containers/skopeo
+      - make build-arch-container
+      # Dont's push if it's PR check
+      - if [[ "$TRAVIS_EVENT_TYPE" != "pull_request" ]]; make push-arch-container ; fi
+
+# Just declaration of stages order to run
+stages:
+  # Test for local build
+  - local-build
+  # Build and push image for 1 architecture
+  - name: image-build-push
+    if: branch = master
+  # Create and push image manifest to have multi-arch image on top of arch specific images.
+  - name: multi-arch-manifest-push
+    if: type != pull_request AND branch = master
+
+# Actual execution of steps
+jobs:
+  allow_failures:
+  - if: arch in (s390x, ppc64le)
+  include:
+    # Run 2 local-build steps in parallel for osx and linux/amd64 platforms
+    - stage: local-build
+      <<: *local-build
+      name: local build for osx
+      os: osx
+      install:
+        # Ideally, the (brew update) should not be necessary and Travis would have fairly
+        # frequently updated OS images; that's not been the case historically.
+        # In particular, explicitly unlink python@2, which has been removed from Homebrew
+        # since the last OS image build (as of July 2020), but the Travis OS still
+        # contains it, and it prevents updating of Python 3.
+      - brew update && brew unlink python@2 && brew install gpgme
+      script:
+      - hack/travis_osx.sh
+    - stage: local-build
+      <<: *local-build
+      name: local build for linux
+      os: linux
+      services:
+      - docker
+      script: 
+      - make vendor && ./hack/tree_status.sh && make local-cross && make check
+
+    # Run 3 image-build-push tasks in parallel for linux/amd64, linux/s390x and linux/ppc64le platforms (for upstream and stable)
+    - stage: image-build-push
+      <<: *image-build-push
+      name: image for amd64
+      arch: amd64
+
+    - stage: image-build-push
+      <<: *image-build-push
+      name: image for s390x
+      arch: s390x
+
+    - stage: image-build-push
+      <<: *image-build-push
+      name: image for ppc64le
+      arch: ppc64le
+
+    # Run final task to generate multi-arch image manifests (for upstream and stable)
+    - stage: multi-arch-manifest-push
+      os: linux
+      script:
+      - SOURCE_TYPE=upstream REPO=skopeo/upstream TAG=master make push-ma-manifest
+      - SOURCE_TYPE=stable REPO=skopeo/stable TAG=v1.2.0 EXTRA_REPO=containers/skopeo make push-ma-manifest
