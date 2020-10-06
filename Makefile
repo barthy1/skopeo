@@ -82,6 +82,14 @@ ifeq ($(DISABLE_CGO), 1)
 	override BUILDTAGS = exclude_graphdriver_devicemapper exclude_graphdriver_btrfs containers_image_openpgp
 endif
 
+ARCHES=amd64 s390x ppc64le
+MA_IMAGE := $(REGISTRY)/$(REPO):$(MA_TAG)
+ARCH_IMAGE := $(MA_IMAGE)-$(GOARCH)
+ifneq ($(EXTRA_REPO),)
+EXTRA_MA_IMAGE := $(REGISTRY)/$(EXTRA_REPO):$(MA_TAG)
+EXTRA_ARCH_IMAGE := $(EXTRA_MA_IMAGE)-$(GOARCH)
+endif
+
 #   make all DEBUG=1
 #     Note: Uses the -N -l go compiler options to disable compiler optimizations
 #           and inlining. Using these build options allows you to subsequently
@@ -132,6 +140,27 @@ local-cross: bin/skopeo.darwin.amd64 bin/skopeo.linux.arm bin/skopeo.linux.arm64
 
 build-container:
 	${CONTAINER_RUNTIME} build ${BUILD_ARGS} -t "$(IMAGE)" .
+
+# Build and ush container specific to arch
+build-push-arch-container:
+	${CONTAINER_RUNTIME} build -t "${ARCH_IMAGE}" contrib/skopeoimage/${SOURCE_TYPE}
+	echo "${QUAY_PASSWORD}" | ${CONTAINER_RUNTIME} login ${REGISTRY} -u "${QUAY_USERNAME}" --password-stdin
+	${CONTAINER_RUNTIME} push "${ARCH_IMAGE}"
+ifneq ($(EXTRA_REPO),)
+	${CONTAINER_RUNTIME} tag "${ARCH_IMAGE}" "${EXTRA_ARCH_IMAGE}"
+	${CONTAINER_RUNTIME} push "${EXTRA_ARCH_IMAGE}"
+endif
+
+# Push manifest to make multi-arch image
+push-ma-manifest:
+	echo "${QUAY_PASSWORD}" | docker login ${REGISTRY} -u "${QUAY_USERNAME}" --password-stdin
+	sudo chmod 0755 /etc/docker
+	DOCKER_CLI_EXPERIMENTAL="enabled" docker manifest create "${MA_IMAGE}" $(foreach arch,${ARCHES}, ${MA_IMAGE}-${arch})
+	DOCKER_CLI_EXPERIMENTAL="enabled" docker manifest push --purge "${MA_IMAGE}"
+ifneq ($(EXTRA_REPO),)
+	DOCKER_CLI_EXPERIMENTAL="enabled" docker manifest create "${EXTRA_MA_IMAGE}" $(foreach arch,${ARCHES}, ${EXTRA_MA_IMAGE}-${arch})
+	DOCKER_CLI_EXPERIMENTAL="enabled" docker manifest push --purge "${EXTRA_MA_IMAGE}"
+endif
 
 $(MANPAGES): %: %.md
 	@sed -e 's/\((skopeo.*\.md)\)//' -e 's/\[\(skopeo.*\)\]/\1/' $<  | $(GOMD2MAN) -in /dev/stdin -out $@

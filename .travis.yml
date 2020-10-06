@@ -1,27 +1,82 @@
 language: go
 
-matrix:
-  include:
-  -  os: linux
-     sudo: required
-     services:
-       - docker
-  -  os: osx
-
 go:
   - 1.13.x
 
 notifications:
   email: false
 
-install:
-  # Ideally, the (brew update) should not be necessary and Travis would have fairly
-  # frequenstly updated OS images; that’s not been the case historically.
-  # In particular, explicitly unlink python@2, which has been removed from Homebrew
-  # since the last OS image build (as of July 2020), but the Travis OS still
-  # contains it, and it prevents updating of Python 3.
-  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then brew update && brew unlink python@2 && brew install gpgme ; fi
+env:
+  global:
+    - REGISTRY=quay.io
+    - MA_TAG=ma
 
-script:
-  - if [[ "$TRAVIS_OS_NAME" == "osx" ]];   then hack/travis_osx.sh ; fi
-  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then make vendor && ./hack/tree_status.sh && make local-cross && make check ; fi
+jobs:
+  allow_failures:
+  - if: arch in (s390x, ppc64le)
+  include:
+    - stage: local-build
+      <<: *local-build
+      name: local build for osx
+      env: SOURCE_TYPE=none
+      os: osx
+      install:
+        # Ideally, the (brew update) should not be necessary and Travis would have fairly
+        # frequenstly updated OS images; that�~@~Ys not been the case historically.
+        # In particular, explicitly unlink python@2, which has been removed from Homebrew
+        # since the last OS image build (as of July 2020), but the Travis OS still
+        # contains it, and it prevents updating of Python 3.
+      - brew update && brew unlink python@2 && brew install gpgme
+      script:
+      - hack/travis_osx.sh
+    - stage: local-build
+      <<: *local-build
+      name: local build for linux
+      os: linux
+      services:
+      - docker
+      script: 
+      - make vendor && ./hack/tree_status.sh && make local-cross && make check
+
+    - stage: image-build-push
+      <<: *image-build-push
+      if: type != pull_request AND branch = master
+      name: image for amd64
+      os: linux
+      arch: amd64
+      services:
+      - docker
+      script:
+      - SOURCE_TYPE=upstream REPO=skopeo/upstream make build-push-arch-container
+      - SOURCE_TYPE=stable REPO=skopeo/stable EXTRA_REPO=containers/skopeo make build-push-arch-container
+
+    - stage: image-build-push
+      <<: *image-build-push
+      if: type != pull_request AND branch = master
+      name: image for s390x
+      os: linux
+      arch: s390x
+      services:
+      - docker
+      script:
+      - SOURCE_TYPE=upstream REPO=skopeo/upstream make build-push-arch-container
+      - SOURCE_TYPE=stable REPO=skopeo/stable EXTRA_REPO=containers/skopeo make build-push-arch-container
+
+    - stage: image-build-push
+      <<: *image-build-push
+      if: type != pull_request AND branch = master
+      name: image for ppc64le
+      os: linux
+      arch: ppc64le
+      services:
+      - docker
+      script:
+      - SOURCE_TYPE=upstream REPO=skopeo/upstream make build-push-arch-container
+      - SOURCE_TYPE=stable REPO=skopeo/stable EXTRA_REPO=containers/skopeo make build-push-arch-container
+
+    - stage: multi-arch-manifest-push
+      if: type != pull_request AND branch = master
+      os: linux
+      script:
+      - SOURCE_TYPE=upstream REPO=skopeo/upstream make push-ma-manifest
+      - SOURCE_TYPE=stable REPO=skopeo/stable EXTRA_REPO=containers/skopeo make push-ma-manifest
