@@ -1,27 +1,75 @@
 language: go
 
-matrix:
-  include:
-  -  os: linux
-     sudo: required
-     services:
-       - docker
-  -  os: osx
-
 go:
   - 1.13.x
 
 notifications:
   email: false
 
-install:
-  # Ideally, the (brew update) should not be necessary and Travis would have fairly
-  # frequenstly updated OS images; that’s not been the case historically.
-  # In particular, explicitly unlink python@2, which has been removed from Homebrew
-  # since the last OS image build (as of July 2020), but the Travis OS still
-  # contains it, and it prevents updating of Python 3.
-  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then brew update && brew unlink python@2 && brew install gpgme ; fi
+env:
+  global:
+    - REGISTRY=quay.io
 
-script:
-  - if [[ "$TRAVIS_OS_NAME" == "osx" ]];   then hack/travis_osx.sh ; fi
-  - if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then make vendor && ./hack/tree_status.sh && make local-cross && make check ; fi
+x_base_steps:
+  - &image-build-push
+    services:
+      - docker
+    os: linux
+    script:
+      - SOURCE_TYPE=upstream REPO=ygaponen/upstream TAG=master make build-push-arch-container
+      - SOURCE_TYPE=stable REPO=ygaponen/stable TAG=v1.2.0 EXTRA_REPO=ygaponen/skopeo make build-push-arch-container
+
+stages:
+  - local-build
+  - name: image-build-push
+    if: type != pull_request AND branch = skopeo_upstream_test1
+  - name: multi-arch-manifest-push
+    if: type != pull_request AND branch = skopeo_upstream_test1
+
+jobs:
+  allow_failures:
+  - if: arch in (s390x, ppc64le)
+  include:
+    - stage: local-build
+      <<: *local-build
+      name: local build for osx
+      os: osx
+      install:
+        # Ideally, the (brew update) should not be necessary and Travis would have fairly
+        # frequenstly updated OS images; that's not been the case historically.
+        # In particular, explicitly unlink python@2, which has been removed from Homebrew
+        # since the last OS image build (as of July 2020), but the Travis OS still
+        # contains it, and it prevents updating of Python 3.
+      - brew update && brew unlink python@2 && brew install gpgme
+      script:
+      - hack/travis_osx.sh
+    - stage: local-build
+      <<: *local-build
+      name: local build for linux
+      os: linux
+      services:
+      - docker
+      script: 
+      - make vendor && ./hack/tree_status.sh && make local-cross && make check
+
+    - stage: image-build-push
+      <<: *image-build-push
+      name: image for amd64
+      arch: amd64
+
+    - stage: image-build-push
+      <<: *image-build-push
+      name: image for s390x
+      os: linux
+      arch: s390x
+
+    - stage: image-build-push
+      <<: *image-build-push
+      name: image for ppc64le
+      arch: ppc64le
+
+    - stage: multi-arch-manifest-push
+      os: linux
+      script:
+      - SOURCE_TYPE=upstream REPO=ygaponen/upstream TAG=master make push-ma-manifest
+      - SOURCE_TYPE=stable REPO=ygaponen/stable TAG=v1.2.0 EXTRA_REPO=ygaponen/skopeo make push-ma-manifest
