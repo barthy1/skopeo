@@ -27,7 +27,7 @@ x_base_steps:
       - make build-arch-container
       # Dont's push if it's PR check
       - if [[ "$TRAVIS_EVENT_TYPE" != "pull_request" ]]; then make push-arch-container ; fi
-
+        #just test
 # Just declaration of stages order to run
 stages:
   # Test for local build
